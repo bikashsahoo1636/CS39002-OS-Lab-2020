@@ -1,1 +1,6 @@
-134
+a.out
+in.txt
+out.txt
+shell
+shell.c
+temp.c

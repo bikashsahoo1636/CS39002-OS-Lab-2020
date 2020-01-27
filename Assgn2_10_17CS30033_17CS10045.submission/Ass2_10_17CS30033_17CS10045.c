@@ -10,14 +10,17 @@
 #define SHELL_BUFSIZE 1024
 #define SHELL_TOK_BUFSIZE 64
 #define SHELL_TOK_DELIM " \t\r\n\a"
+#define SHELL_PIPE_DELIM "|"
 
 int execute(char **args, int position);
 char ** shell_split_line(char * line, int *position);
+char ** shell_split_pipe(char * line, int *size);
 char* shell_read_line();
 void shell_loop();
 int shell_cd(char **args);
 int shell_exit(char **args);
 int shell_help(char **args);
+int shell_launch(char **args, int position, int in, int out);
 int max(int a,int b);
 
 
@@ -42,7 +45,6 @@ int shell_num_builtins()
 
 int main(int argc, char **argv)
 {
-    // Setting for loading config files
 
     // Command loop
     shell_loop();
@@ -55,33 +57,60 @@ int main(int argc, char **argv)
 void shell_loop()
 {
     char *line;
+    size_t line_size = 1024;
     char **args;
+    char **pipes;
     int status;
-    int position;
-
+    int position, pipe_size;
+    line = (char *)(malloc(line_size * sizeof(char)));
     do
     {
         
         printf("--> ");
         line = shell_read_line();
-        args = shell_split_line(line, &position);
-
-        int i=0;
-        /*printf("HELLO\n");
-        for(i=0;i<position;++i)
-        {
-            printf("%s\n",args[i]);
+        // line = readline();
+        // getline(&line, &line_size, stdin);
+        // scanf("%[^\n]s", line);
+        // printf("The command is %s\n", line);
+        pipes = shell_split_pipe(line, &pipe_size);
+        if (pipe_size == 1) {
+            args = shell_split_line(line, &position);
+            int i=0;
+            /*printf("HELLO\n");
+            for(i=0;i<position;++i)
+            {
+                printf("%s\n",args[i]);
+            }
+            */
+            // printf("END\n");
+            status = execute(args, position);
         }
-        printf("END\n");
-        */
-
-
-
-        status = execute(args, position);
-
+        else if (pipe_size > 1) {
+            // printf("%d\n", pipe_size);
+            // for (int j=0; j<pipe_size;j++)
+            //     printf("%s\n", pipes[j]);
+            // printf("BEGIN\n");
+            int i;
+            pid_t pid;
+            // in handles the file descriptor for input
+            int in = 0, fd[2];
+            for (i=0; i<pipe_size - 1; ++i) {
+                pipe(fd);
+                args = shell_split_line(pipes[i], &position);
+                status = shell_launch(args, position, in, fd[1]);
+                close(fd[1]);
+                in = fd[0];
+            }
+            // if (in != 0)
+            //     dup2 (in, 0);
+            args = shell_split_line(pipes[i], &position);
+            status = shell_launch(args, position, in, 1);
+        }
         // memory cleaning
         free(line);
         free(args);
+        fflush(stdin);
+        fflush(stdout);
     } while (status);
 
 }
@@ -201,7 +230,41 @@ char** shell_split_line(char* line, int *position)
     return tokens;
 }
 
-int shell_launch(char **args, int position) 
+char** shell_split_pipe(char* line, int *size)
+{
+    int bufsize = SHELL_TOK_BUFSIZE;
+    *size = 0;
+
+    char **tokens = malloc(sizeof(char*) * bufsize);
+    char *token;
+
+    if (!tokens) 
+    {
+        memory_failed_error();
+    }
+
+    token = strtok(line, SHELL_PIPE_DELIM);
+    while (token != NULL)
+    {
+        tokens[*size] = token;
+        (*size)++;
+        
+        if ((*size) >= bufsize)
+        {
+            bufsize += SHELL_TOK_BUFSIZE;
+            tokens = realloc(tokens, bufsize * sizeof(char *));
+            if (!tokens)
+            {
+                memory_failed_error();
+            }
+        }
+        token = strtok(NULL, SHELL_PIPE_DELIM);
+    }
+    tokens[(*size)] = NULL;
+    return tokens;
+}
+
+int shell_launch(char **args, int position, int in, int out) 
 {
     pid_t pid, wpid;
     int status;
@@ -222,6 +285,18 @@ int shell_launch(char **args, int position)
     pid = fork();
     if (pid == 0) 
     {
+
+        if (in != 0)
+        {
+          dup2 (in, 0);
+          close (in);
+        }
+
+        if (out != 1)
+        {
+          dup2 (out, 1);
+          close (out);
+        }
     	// Child process
         int count=0;
         for(i=0;i<size;++i)
@@ -280,7 +355,7 @@ int execute(char **args, int position)
                 return (*built_in_func[i])(args);
             }
         }
-        return shell_launch(args, position);
+        return shell_launch(args, position, 0, 1);
     }
     
 }
