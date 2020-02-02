@@ -3,7 +3,7 @@
 #include <unistd.h> 
 #include <stdlib.h> 
 #include <time.h>
-
+#include <pthread.h>
 #include <sys/ipc.h> 
 #include <sys/shm.h> 
 
@@ -17,7 +17,7 @@ typedef struct
 	int proc_id, prod_num, priority, time, job_id;
 } job;
 
-void delay(int number_of_seconds);
+void delay(float number_of_seconds);
 
 void printjob(job j);
 job createjob(int proc_id, int prod_num);
@@ -26,6 +26,7 @@ typedef struct
 {
 	job jobpq[MAX_PRIORITY_QUEUE];
 	int max_size, size, job_created, job_completed;
+	pthread_mutex_t lock;
 } priorityqueue;
 
 void printqueue(priorityqueue* pq);
@@ -49,7 +50,7 @@ int main()
 	cout<<"Max jobs:";
 	cin>>max_jobs;
 
-	key_t key1 = ftok("/dev/urandom", 500);
+	key_t key1 = ftok("/dev/random", 'b');
 	int shmid1 = shmget(key1,sizeof(priorityqueue),0660|IPC_CREAT);
 	if (shmid1<0) {
 		cout<<"Failed to allocate shared memory!\n";
@@ -61,10 +62,8 @@ int main()
 	clock_t start,end;
 
 	pid_t pid;
-	/*
-	cout<<"\t\t\Job Hierarchy"<<endl;
-	cout<<"Insert/Cons\tConsID\tConsNum\tProdID\tProdNum"<<endl;
-	*/
+	cout<<endl;
+	cout<<"Action\tProdProcID\tProdNum\tConsProcID\tConsNum\tJobID\tJobPrio\tCompTime"<<endl;
 	start = clock();
 	for(int i=1;i<=NP;++i)
 	{
@@ -73,8 +72,9 @@ int main()
 		else if(pid==0)
 		{
 			//child process
-			int proc_id=rand()%100000+1;
-			pq = (priorityqueue*)shmat(shmid1,(void*)0,0);
+			srand(time(0) ^ i*7);
+			int proc_id=getpid();
+			// pq = (priorityqueue*)shmat(shmid1,(void*)0,0);
 			producer(pq, i,proc_id, max_jobs);
 			return 0;
 		}
@@ -87,8 +87,9 @@ int main()
 		else if(pid==0)
 		{
 			//child process
-			int proc_id=rand()%100000+1;
-			pq = (priorityqueue*)shmat(shmid1,(void*)0,0);
+			srand(time(0) ^ i);
+			int proc_id=getpid();
+			// pq = (priorityqueue*)shmat(shmid1,(void*)0,0);
 			consumer(pq, i, proc_id, max_jobs);
 			return 0;
 		}		
@@ -96,8 +97,9 @@ int main()
 
 	while(1)
 	{
-		if(pq->job_completed==max_jobs)
+		if((pq->job_completed)==max_jobs)
 		{
+			delay(0.05);
 			end = clock();
 			cout<<"We have created and consumed "<<max_jobs<<" jobs, within "<<((double)(end-start))/CLOCKS_PER_SEC<<" seconds."<<endl;
 			break;
@@ -113,22 +115,31 @@ void producer(priorityqueue* pq, int prod_num, int proc_id, int max_jobs)
 	while(1)
 	{
 		if(pq->job_created>=max_jobs) break;
-		pq->job_created++;
-		job j = createjob(proc_id,prod_num);
-		delay(rand()%4);
+		delay((float) (rand()%4));
 		while(1)
 		{
-			if((pq->size)<(pq->max_size))
+			// locking shared memory for job insertion
+			pthread_mutex_lock(&pq->lock);
+			if(pq->job_created>=max_jobs)
 			{
-				cout<<"END\n";
-				insert(pq,j);
-				cout<<"END2\n";
-				cout<<"Job Inserted-->Proc_id:"<<j.proc_id<<", ProdNum:"<<j.prod_num<<", JobID"<<j.job_id<<", Priority"<<j.priority<<", Time:"<<j.time<<endl;
+				pthread_mutex_unlock(&pq->lock);
 				break;
 			}
+			job j = createjob(proc_id,prod_num);
+			if((pq->size)<(pq->max_size))
+			{
+				pq->job_created++;
+				insert(pq,j);
+				// printqueue(pq);
+				cout<<"Create\t"<<j.proc_id<<"\t\t"<<j.prod_num<<"\t"<<"-\t\t-\t"<<j.job_id<<"\t"<<j.priority<<"\t"<<j.time<<endl;
+				// unlocking shared memory
+				pthread_mutex_unlock(&pq->lock);
+				break;
+			}
+			// unlocking shared memory
+			pthread_mutex_unlock(&pq->lock);
 		}
 	}
-	cout<<"ProducerDone"<<endl;
 	return;
 }
 
@@ -136,24 +147,32 @@ void consumer(priorityqueue *pq, int cons_num, int proc_id, int max_jobs)
 {
 	while(1)
 	{
-		delay(rand()%4);
 		if(pq->job_completed==max_jobs) break;
+		delay((float) (rand()%4));
 		while(1)
 		{
-			if(pq->job_completed==max_jobs) break;
-			if(pq->size>0)
+			// locking shared memory for job removal
+			pthread_mutex_lock(&pq->lock);
+			if((pq->job_completed)==max_jobs)
 			{
-				if(pq->job_completed==max_jobs) break;
-				job j = remove(pq);
-				cout<<"Job Consumed-->Con_id:"<<proc_id<<", ConsNum"<<cons_num<<", Proc_id:"<<j.proc_id<<", ProdNum:"<<j.prod_num<<", JobID"<<j.job_id<<", Priority"<<j.priority<<", Time:"<<j.time<<endl;
-				delay(j.time);
-				pq->job_completed++;
+				pthread_mutex_unlock(&pq->lock);
 				break;
 			}
-		}
-		if(pq->job_completed==max_jobs) break;		
+			if((pq->size)>0)
+			{
+				// printqueue(pq);
+				job j = remove(pq);
+				cout<<"Consume\t"<<j.proc_id<<"\t\t"<<j.prod_num<<"\t"<<proc_id<<"\t\t"<<cons_num<<"\t"<<j.job_id<<"\t"<<j.priority<<"\t"<<j.time<<endl;
+				delay((float)j.time);
+				(pq->job_completed) = (pq->job_completed) + 1;
+				// releasing the lock on shared memory
+				pthread_mutex_unlock(&pq->lock);
+				break;
+			}
+			// releasing the lock on shared memory
+			pthread_mutex_unlock(&pq->lock);
+		}	
 	}
-
 	return;
 }
 
@@ -189,8 +208,8 @@ void printqueue(priorityqueue* pq)
 void insert(priorityqueue* pq, job j)
 {
 
-	(pq->size)++;
-	// (pq->jobpq)[pq->size] = j;
+	pq->size++;
+	(pq->jobpq)[pq->size] = j;
 	int i=pq->size;
 	while(i>1)
 	{
@@ -215,6 +234,13 @@ priorityqueue* createpq(int max_size, int shmid1)
 	pq->job_created=0;
 	pq->job_completed=0;
 	pq->max_size=max_size;
+
+	// initialising mutex locking
+	pthread_mutexattr_t lock_attr;
+	pthread_mutexattr_init(&lock_attr);
+	pthread_mutexattr_setpshared(&lock_attr, PTHREAD_PROCESS_SHARED);
+	pthread_mutex_init(&pq->lock, &lock_attr);
+
 	return pq;
 }
 
@@ -229,12 +255,13 @@ job remove(priorityqueue* pq)
 	else if(pq->size==1)
 	{
 		pq->size--;
-		return (pq->jobpq)[1]; 
+		return (pq->jobpq)[1];
 	}
 	else
 	{
+		// cout << pq->size << endl;
 		job temp=(pq->jobpq)[1];
-		(pq->jobpq)[1] = (pq->jobpq)[pq->size];
+		(pq->jobpq)[1] = (pq->jobpq)[(pq->size)];
 		pq->size--;
 		int i=1;
 		while(i<pq->size)
@@ -284,10 +311,9 @@ job remove(priorityqueue* pq)
 
 		return temp;
 	}
-
 }
 
-void delay(int number_of_seconds) 
+void delay(float number_of_seconds) 
 {
     clock_t start_time = clock(); 
     while (clock() < start_time + number_of_seconds*CLOCKS_PER_SEC); 

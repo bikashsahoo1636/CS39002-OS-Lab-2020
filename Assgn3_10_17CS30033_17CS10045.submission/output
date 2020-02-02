@@ -1,0 +1,5 @@
+Producers:Consumers:Maxsize of priority queue:Max jobs:
+Action	ProdProcID	ProdNum	ConsProcID	ConsNum	JobID	JobPrio	CompTime
+Create	370		1	-		-	70539	5	1
+Create	372		3	-		-	8037	1	2
+Create	372		3	-		-	47468	9	4
