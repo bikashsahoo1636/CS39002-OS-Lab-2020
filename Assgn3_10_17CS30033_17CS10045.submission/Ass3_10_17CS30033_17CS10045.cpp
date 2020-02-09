@@ -6,11 +6,15 @@
 #include <pthread.h>
 #include <sys/ipc.h> 
 #include <sys/shm.h> 
+#include <sys/time.h>
+#include <chrono>
 
 using namespace std;
 
 // can handle a maximum priority queue size of 1000
 #define MAX_PRIORITY_QUEUE 1000
+
+// defining structures and functions structures
 
 typedef struct
 {
@@ -39,7 +43,10 @@ void consumer(priorityqueue *pq,int cons_num,int proc_id, int max_jobs);
 
 int main()
 {
+	// random seed for parent
 	srand(time(0));
+
+	// user input
 	int NP,NC,max_size,max_jobs;
 	cout<<"Producers:";
 	cin>>NP;
@@ -50,71 +57,85 @@ int main()
 	cout<<"Max jobs:";
 	cin>>max_jobs;
 
+	// random key for shared memory allocation using /dev/random file
 	key_t key1 = ftok("/dev/random", 'b');
+	// create shared memory
 	int shmid1 = shmget(key1,sizeof(priorityqueue),0660|IPC_CREAT);
 	if (shmid1<0) {
 		cout<<"Failed to allocate shared memory!\n";
 		exit(1);
 	}
+	// form priority queue from the shared memory
 	priorityqueue *pq = createpq(max_size, shmid1);
 
 
-	clock_t start,end;
+	// note begin time
+	auto begin = std::chrono::high_resolution_clock::now();
+	// double begin =  (tv.tv_sec) * 1000 + (tv.tv_usec) / 1000;
 
 	pid_t pid;
 	cout<<endl;
 	cout<<"Action\tProdProcID\tProdNum\tConsProcID\tConsNum\tJobID\tJobPrio\tCompTime"<<endl;
-	start = clock();
+	// creating all producers
 	for(int i=1;i<=NP;++i)
 	{
 		pid = fork();
 		if(pid<0) cout<<"ERROR PRODUCER CREATION FAILED.";
 		else if(pid==0)
 		{
-			//child process
+			//differed seed for each child process
 			srand(time(0) ^ i*7);
+			// process id of the child
 			int proc_id=getpid();
-			// pq = (priorityqueue*)shmat(shmid1,(void*)0,0);
 			producer(pq, i,proc_id, max_jobs);
 			return 0;
 		}
 	}
 
+	// creating all consumers
 	for(int i=1;i<=NC;++i)
 	{
 		pid = fork();
 		if(pid<0) cout<<"ERROR CONSUMER CREATION FAILED.";
 		else if(pid==0)
 		{
-			//child process
+			//different seed for each child process
 			srand(time(0) ^ i);
+			// get pid of the child in itself
 			int proc_id=getpid();
-			// pq = (priorityqueue*)shmat(shmid1,(void*)0,0);
 			consumer(pq, i, proc_id, max_jobs);
 			return 0;
 		}		
 	}
 
+	// while loop that waits till all the jobs are created and consumed
 	while(1)
 	{
-		if((pq->job_completed)==max_jobs)
+		// put lock before querying so state change is not possible
+		pthread_mutex_lock(&pq->lock);
+		if((pq->job_completed)==max_jobs and (pq->job_created)==max_jobs)
 		{
-			delay(0.05);
-			end = clock();
-			cout<<"We have created and consumed "<<max_jobs<<" jobs, within "<<((double)(end-start))/CLOCKS_PER_SEC<<" seconds."<<endl;
+			// calculate end time and time consumed thereafter
+			auto end = std::chrono::high_resolution_clock::now();
+			auto consumed = std::chrono::duration_cast<std::chrono::microseconds>(end-begin);
+			cout<<"We have created and consumed "<<max_jobs<<" jobs, within "<< (float)consumed.count()/1000000 <<" seconds."<<endl;
+			pthread_mutex_unlock(&pq->lock);
 			break;
 		}
+		// unlock memory
+		pthread_mutex_unlock(&pq->lock);
 	}
-
 	return 0;
 }
 
-
+// producer function
 void producer(priorityqueue* pq, int prod_num, int proc_id, int max_jobs)
 {
 	while(1)
 	{
+		// if all jobs created, exit
 		if(pq->job_created>=max_jobs) break;
+		// random delay
 		delay((float) (rand()%4));
 		while(1)
 		{
@@ -125,10 +146,13 @@ void producer(priorityqueue* pq, int prod_num, int proc_id, int max_jobs)
 				pthread_mutex_unlock(&pq->lock);
 				break;
 			}
+			// create job
 			job j = createjob(proc_id,prod_num);
 			if((pq->size)<(pq->max_size))
 			{
+				// increment job counter
 				pq->job_created++;
+				// insert job
 				insert(pq,j);
 				// printqueue(pq);
 				cout<<"Create\t"<<j.proc_id<<"\t\t"<<j.prod_num<<"\t"<<"-\t\t-\t"<<j.job_id<<"\t"<<j.priority<<"\t"<<j.time<<endl;
@@ -143,11 +167,14 @@ void producer(priorityqueue* pq, int prod_num, int proc_id, int max_jobs)
 	return;
 }
 
+// consumer function
 void consumer(priorityqueue *pq, int cons_num, int proc_id, int max_jobs)
 {
 	while(1)
 	{
+		// exit if all jobs consumed
 		if(pq->job_completed==max_jobs) break;
+		// random delay
 		delay((float) (rand()%4));
 		while(1)
 		{
@@ -161,9 +188,12 @@ void consumer(priorityqueue *pq, int cons_num, int proc_id, int max_jobs)
 			if((pq->size)>0)
 			{
 				// printqueue(pq);
+				// remove job
 				job j = remove(pq);
-				cout<<"Consume\t"<<j.proc_id<<"\t\t"<<j.prod_num<<"\t"<<proc_id<<"\t\t"<<cons_num<<"\t"<<j.job_id<<"\t"<<j.priority<<"\t"<<j.time<<endl;
+				// delay caused by the job compute time
 				delay((float)j.time);
+				cout<<"Consume\t"<<j.proc_id<<"\t\t"<<j.prod_num<<"\t"<<proc_id<<"\t\t"<<cons_num<<"\t"<<j.job_id<<"\t"<<j.priority<<"\t"<<j.time<<endl;
+				// increment counter
 				(pq->job_completed) = (pq->job_completed) + 1;
 				// releasing the lock on shared memory
 				pthread_mutex_unlock(&pq->lock);
@@ -176,6 +206,7 @@ void consumer(priorityqueue *pq, int cons_num, int proc_id, int max_jobs)
 	return;
 }
 
+// print job
 void printjob(job j)
 {
 	cout<<"\nProcess ID:"<<j.proc_id;
@@ -185,6 +216,7 @@ void printjob(job j)
 	cout<<"\nJob ID:"<<j.job_id<<"\n\n";
 }
 
+// create job with random integers for id, priority and computer time
 job createjob(int proc_id, int prod_num)
 {
 	job j;
@@ -196,6 +228,7 @@ job createjob(int proc_id, int prod_num)
 	return j;
 }
 
+// debugging function, prints the priority queue
 void printqueue(priorityqueue* pq)
 {
 	for(int i=1;i<=pq->size;++i) 
@@ -205,6 +238,7 @@ void printqueue(priorityqueue* pq)
 	}
 }
 
+// insert a new item into the priority queue
 void insert(priorityqueue* pq, job j)
 {
 
@@ -227,6 +261,7 @@ void insert(priorityqueue* pq, job j)
 	return;
 }
 
+// creates priority queue and initialises it
 priorityqueue* createpq(int max_size, int shmid1)
 {
 	priorityqueue* pq = (priorityqueue*)shmat(shmid1,(void*)0,0);
@@ -244,6 +279,7 @@ priorityqueue* createpq(int max_size, int shmid1)
 	return pq;
 }
 
+// removes an item and arranges the priority queue to put item with highest priority at top
 job remove(priorityqueue* pq)
 {
 	if(pq->size==0) 
@@ -313,6 +349,7 @@ job remove(priorityqueue* pq)
 	}
 }
 
+// custom implementation of delay in order to avoid pausing of clock
 void delay(float number_of_seconds) 
 {
     clock_t start_time = clock(); 
