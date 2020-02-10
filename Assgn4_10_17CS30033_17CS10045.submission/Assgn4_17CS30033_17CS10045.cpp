@@ -88,26 +88,39 @@ int main()
 		}
 	}
 
+	if(producers_remain==0)
+	{
+		cout<<"No Producers created! Exiting..."<<endl;
+		exit(EXIT_FAILURE);
+	}
+	if(producers_remain==N)
+	{
+		cout<<"No Consumers created! Exiting..."<<endl;;
+		exit(EXIT_FAILURE);
+	}
+
 	// creating scheduler and reporter
-	pthread_t scheduler_tid;
+	pthread_t scheduler_tid, reported_tid;
 	pthread_create(&scheduler_tid, NULL, &scheduler, &i);
-	i++;
-	pthread_create(NULL, NULL, &reporter, &i);
+	int j = i+1;
+	pthread_create(&reported_tid, NULL, &reporter, &j);
 
-	// wait till the scheduler is alive
+	// wait till the scheduler and reporter are alive
 	pthread_join(scheduler_tid, NULL);
+	pthread_join(reported_tid, NULL);
 
-	cout<<"All operations done, scheduler died!";
+	cout<<"All operations done, scheduler and reporter closed!"<<endl;
 	return 0;
 }
 
 
 void * producer(void * x)
 {
-	int id =*(int*)x;
-	cout<<"This is Producer Thread Number "<<id<<endl;
-
+	// initialisation time required in order to avoid seg fault
 	usleep(1000);
+
+	int id =*(int*)x;
+	// cout<<"This is Producer Thread Number "<<id<<endl;
 
 	// masking for signal SIGUSR1 at times when important process is in progress
 	sigset_t ign; sigemptyset(&ign); sigaddset(&ign, SIGUSR1);
@@ -136,10 +149,10 @@ void * producer(void * x)
 
 void * consumer(void * x)
 {
-	int id =*(int*)x;
-	cout<<"This is Producer Thread Number "<<id<<endl;
-
+	// initialisation time required in order to avoid seg fault
 	usleep(1000);
+	int id =*(int*)x;
+	// cout<<"This is Consumer Thread Number "<<id<<endl;
 
 	// masking for signal SIGUSR1 at times when important process is in progress
 	sigset_t ign; sigemptyset(&ign); sigaddset(&ign, SIGUSR1);
@@ -159,15 +172,21 @@ void * consumer(void * x)
 
 void * scheduler(void * x)
 {
-	usleep(10000);
 	int id =*(int*)x;
 	int cur_thrd_id=0;
 	cout<<"This is Scheduler Thread Number "<<id<<endl;
+	// initialisation time required in order to avoid seg fault
+	usleep(1000);
 
 	while(true){
 		pthread_mutex_lock(&buffer_lock);
 		// terminate if no producers remain and buffer size if zero
-		if((!producers_remain) && shared_buff_size==0) break;
+		if((!producers_remain) && shared_buff_size==0) 
+		{
+			pthread_mutex_unlock(&buffer_lock);
+			break;
+		}
+		pthread_mutex_unlock(&buffer_lock);
 		// find a non dead thread
 		while(tinfo[cur_thrd_id].dead)
 		{
@@ -177,16 +196,23 @@ void * scheduler(void * x)
 		// wake up that thread
 		pthread_kill(tinfo[cur_thrd_id].id, SIGUSR2);
 		// tell reporter
+		pthread_mutex_lock(&buffer_lock);
 		cur_thread = cur_thrd_id;
 		thread_woken = true;
+		pthread_mutex_unlock(&buffer_lock);	
 		// initialize clock
 		clock_t cur_t = clock();
 		// let the thread run till it runs out of time or dies
-		while((((double)(clock()-cur_t)/CLOCKS_PER_SEC) >= QUANTUM) || (tinfo[cur_thrd_id].dead));
+		while(!(((double)(clock()-cur_t)/CLOCKS_PER_SEC) >= QUANTUM) && !(tinfo[cur_thrd_id].dead));
 
 		// if thread not dead, send signal to sleep
 		if (!tinfo[cur_thrd_id].dead) pthread_kill(tinfo[cur_thrd_id].id, SIGUSR1);
-		else rep_last_terminated = true;
+		else 
+		{
+			pthread_mutex_lock(&buffer_lock);
+			rep_last_terminated = true;
+			pthread_mutex_unlock(&buffer_lock);
+		}
 		// move to next thread
 		cur_thrd_id = (cur_thrd_id+1) % total_threads;
 	}
@@ -196,12 +222,18 @@ void * scheduler(void * x)
 
 void * reporter(void * x) 
 {
-	usleep(10000);
+	int id =*(int*)x;
+	cout<<"This is Reported Thread Number "<<id<<endl;
 	int last_thread = -1;
 	while(true)
 	{
 		// wait till a thread is started
-		while(!thread_woken);
+		while(!thread_woken){
+			if ((!producers_remain) && shared_buff_size==0){
+				break;
+			}
+		}
+		pthread_mutex_lock(&buffer_lock);
 		thread_woken = false;
 
 		if(rep_last_terminated){
@@ -209,24 +241,31 @@ void * reporter(void * x)
 		} 
 		else if (last_thread == -1)
 		{
-			cout<<"REPORT: First thread "<<cur_thread<<", a "<<tinfo[cur_thread].type<<" running!";
+			cout<<"REPORT: First thread "<<cur_thread<<", a "<<tinfo[cur_thread].type<<" running!"<<endl;
 		}
 		else 
 		{
 			cout<<"REPORT: Last thread "<< last_thread << ", a "<<tinfo[last_thread].type<<" switched to Thread "<< cur_thread << ", a "<<tinfo[cur_thread].type<<endl;
 		}
-		pthread_mutex_lock(&buffer_lock);
-		cout<<"REPORT: Size of buffer is "<<shared_buff_size<<endl;
-		pthread_mutex_unlock(&buffer_lock);
-		rep_last_terminated = false;
 		last_thread = cur_thread;
+		cout<<"REPORT: Size of buffer is "<<shared_buff_size<<endl;
+		// terminate if no producers remain and buffer size if zero
+		if((!producers_remain) && shared_buff_size==0) 
+		{
+			pthread_mutex_unlock(&buffer_lock);
+			break;
+		}
+		rep_last_terminated = false;
+		pthread_mutex_unlock(&buffer_lock);
 	}
+	cout<<"Reported done, closing..."<<endl;
 	return NULL;
 }
 
 // common method to access buffer in order to avoid code duplication
 int access_buff(int opr, int val)
 {
+	// cout<<"Here1"<<endl;
 	// put lock
 	pthread_mutex_lock(&buffer_lock);
 	// 0 for removing integer
@@ -256,10 +295,12 @@ int access_buff(int opr, int val)
 		else {
 			shared_buff[shared_buff_size] = val;
 			shared_buff_size++;
+			// cout<<"Here1"<<endl;
 			pthread_mutex_unlock(&buffer_lock);
 			return 1;
 		}
 	}
+	pthread_mutex_unlock(&buffer_lock);
 }
 
 // signal handlers for all threads
@@ -270,6 +311,7 @@ void signal_handler(int sig)
 	if (sig==SIGUSR1)
 	{
 		// wait till SIGUSR2 is provided
-		sigwait(&ign, NULL);
+		int sign;
+		sigwait(&ign, &sign);
 	}
 }
