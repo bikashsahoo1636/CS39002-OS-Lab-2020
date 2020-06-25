@@ -1,0 +1,211 @@
+		     +--------------------------+
+       	       	     |		CS39002		|
+		     | PROJECT 2: USER PROGRAMS	|
+		     | 	   DESIGN DOCUMENT     	|
+		     +--------------------------+
+
+---- GROUP ----
+
+>> Fill in the names, roll numbers and email addresses of your group members.
+
+Shivam Jha 17CS30033 <code@thealphadollar.me>
+Robin Babu P 17CS10045
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+We have built it on top of assignment 1 of pintOS.
+
+The submission sometimes gives Kernel Panic. We have not been able to debug the issue.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+			   ARGUMENT PASSING
+			   ================
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+// argument structure
+typedef struct arguments {
+  int argc;     // store count of arguments
+  char **argv;  // store arguments as strings
+} args_t;
+
+---- ALGORITHMS ----
+
+>> A2: Briefly describe how you implemented argument parsing.  How do
+>> you arrange for the elements of argv[] to be in the right order?
+>> How do you avoid overflowing the stack page?
+
+We created a function `arg_parser` which takes input line and arguments pointer as arguments
+and tokenizes the line into words split by whitespace. The first entry in the arguments is the
+filename which is then passed onto the function `thread_create` instead of the entire input.
+
+A new function `send_args_to_stack` is implemented which pushes the arguments on top of the stack
+based on the eip pointer provided in the arguments. We count the number of bytes of the arguments and
+by the corresponding amount the stack pointer is moved. We put the args in lower to higher address
+and access in a similar manner ensuring the order of the arguments. 
+
+Then we further decrease the stack pointer, putting the pointer to the first
+argument, count of argument and return address. We check total space at all times in order to avoid overflow of the stack page. The total space
+compared for is the sum of all arguments, pointers, pointer to pointers, return address and the count.
+
+
+---- RATIONALE ----
+
+>> A3: Why does Pintos implement strtok_r() but not strtok()?
+
+It is the difference in how they internally store the previous location;
+strtok_r saves the pointer to an enternal location which eradicates the race 
+condition generated when storing in an internal static variable (like strtok()).
+
+>> A4: In Pintos, the kernel separates commands into a executable name
+>> and arguments.  In Unix-like systems, the shell does this
+>> separation.  Identify at least two advantages of the Unix approach.
+
+- It is safer to do it in the shell itself because it runs in non-kernel mode.
+- Resolution of path is more convenient (relative paths etc can be used) since
+shell has more awareness of the high-level execution environment.
+
+			     SYSTEM CALLS
+			     ============
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+typedef int pid_t;
+#define PID_ERROR ((pid_t) -1)
+
+// Process status ENUMS
+#define PROC_LOADING 0
+#define PROC_RUNNING 1
+#define PROC_FAIL 2
+#define PROC_EXIT 4
+
+// Define error
+#define PID_ERROR ((pid_t) -1)
+
+// struct of process
+typedef struct process_
+{
+    pid_t pid;          /* process identifier */
+    struct process_ *parent;      /* parent of the current process */
+    struct list child_list;     /* list of children */
+    struct list file_list;      /* list of files */
+    struct file *exec_file;     /* executable file */
+
+    struct process_info *info;            /* process information */
+
+    // define state variables
+    int fd_tracker;             /* track file descriptors */
+} process;
+
+// struct to maintain information about the process
+typedef struct process_info {
+    pid_t pid;                  // process identifier
+    struct process_ *process;   // pointer to the process
+    int status, exit_status;    // current status and exit status
+    bool is_waiting;            /* whether parent is waiting or not, if not then orphan*/
+    struct list_elem proc_elem;      /* list element */
+} proc_info;
+
+// a file locked or attached to a process
+typedef struct process_file
+{
+    int fd;         /* file descriptor */
+    struct file *file;   /* pointer to file */
+    struct list_elem elem;   /*list element for quick access */
+} proc_file;
+
+
+>> B2: Describe how file descriptors are associated with open files.
+>> Are file descriptors unique within the entire OS or just within a
+>> single process?
+
+File descriptors are associated via an array of pointers to all
+the files and file descriptors that have been opened. `get_descriptor`
+and `get_file` are methods used to interchange between file and
+file descriptor.
+
+Yes, file descriptors are unique to their process.
+
+
+---- ALGORITHMS ----
+
+>> B3: Describe your code for reading and writing user data from the
+>> kernel.
+
+As soon as data is requested, we check if the address is a valid one
+and the user is allowed to access the same. Once we find that the address
+is valid, we use the methods "get_word", "get_byte" and "put_byte" in order
+to perform word retrieval, byte retrieval and saving byte.
+
+>> B4: Suppose a system call causes a full page (4,096 bytes) of data
+>> to be copied from user space into the kernel.  What is the least
+>> and the greatest possible number of inspections of the page table
+>> (e.g. calls to pagedir_get_page()) that might result?  What about
+>> for a system call that only copies 2 bytes of data?  Is there room
+>> for improvement in these numbers, and how much?
+
+First we need to verify that the address pointed by both the page beginning and end
+belong to the user space and are valid.
+
+In the worst case, the full page data can span over two pages where two checks would be necessary.
+
+A better solution would be to implement the validation inside page_fault but for this every reference needs
+to be mapped. This is faster because detection is done by MMU hardware.
+
+>> B5: Any access to user program memory at a user-specified address
+>> can fail due to a bad pointer value.  Such accesses must cause the
+>> process to be terminated.  System calls are fraught with such
+>> accesses, e.g. a "write" system call requires reading the system
+>> call number from the user stack, then each of the call's three
+>> arguments, then an arbitrary amount of user memory, and any of
+>> these can fail at any point.  This poses a design and
+>> error-handling problem: how do you best avoid obscuring the primary
+>> function of code in a morass of error-handling?  Furthermore, when
+>> an error is detected, how do you ensure that all temporarily
+>> allocated resources (locks, buffers, etc.) are freed?  In a few
+>> paragraphs, describe the strategy or strategies you adopted for
+>> managing these issues.  Give an example.
+
+We check at the very beginning in any memory accessing system call, that the memory 
+is valid. If is detected that memory is invalid or inaccessible the program free all the
+process related data by calling the modified `process_exit` method.
+
+Each of the list elements are removed by calling using the list_element data structure.
+
+
+---- RATIONALE ----
+
+>> B6: Why did you choose to implement access to user memory from the
+>> kernel in the way that you did?
+
+There are two levels of check:
+
+- First is in the syscall implementation where we check that the memory location is in the user's space
+and is valid.
+- Secondly we check in the page_fault function.
+
+This is so that the faster checking (the former one) is always done but the latter is only performed when everything else seems
+good.
+
+>> B7: What advantages or disadvantages can you see to your design
+>> for file descriptors?
+
+In our implementation, each process contains an array of files it has opened within it's own structure. This enables fast and,
+in linear time access to the files and file descriptors.
+
+One small issue with this is the fact that same files when opened by different processes will have separate descriptors and hence is a 
+duplication issue as well as might cause race condition.
